@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import requests
 import os
 from dotenv import load_dotenv
@@ -7,9 +8,11 @@ import json
 load_dotenv()
 
 app = Flask(__name__)
+CORS(app)
 
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions'
+TEST_MODE = os.getenv('TEST_MODE', 'false').lower() == 'true'
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
@@ -40,7 +43,9 @@ def analyze():
         text = data['text']
         
         # Read the SKILL.md to include in the prompt
-        skill_path = '.agents/skills/soultrace/SKILL.md'
+        # Get the project root directory (parent of backend folder)
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        skill_path = os.path.join(project_root, '.agents', 'skills', 'soultrace', 'SKILL.md')
         with open(skill_path, 'r') as f:
             skill_content = f.read()
         
@@ -66,51 +71,65 @@ Return ONLY valid JSON with this structure:
     "entropy": 0.0
 }}"""
         
-        # Call OpenRouter API
-        headers = {
-            'Authorization': f'Bearer {OPENROUTER_API_KEY}',
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'http://localhost:5000',
-            'X-Title': 'SoulTrace Backend'
-        }
-        
-        payload = {
-            'model': 'openai/gpt-4o-mini',
-            'messages': [
-                {
-                    'role': 'user',
-                    'content': prompt
-                }
-            ],
-            'temperature': 0.7,
-            'max_tokens': 1024
-        }
-        
-        response = requests.post(OPENROUTER_API_URL, json=payload, headers=headers)
-        response.raise_for_status()
-        
-        result = response.json()
-        
-        # Extract the text content from OpenRouter's response
-        if 'choices' in result and len(result['choices']) > 0:
-            response_text = result['choices'][0]['message']['content']
-            
-            # Parse the JSON response from OpenRouter
-            try:
-                # Try to extract JSON from the response
-                json_start = response_text.find('{')
-                json_end = response_text.rfind('}') + 1
-                
-                if json_start != -1 and json_end > json_start:
-                    json_str = response_text[json_start:json_end]
-                    analysis = json.loads(json_str)
-                    return jsonify(analysis), 200
-                else:
-                    return jsonify({"error": "Could not parse JSON from OpenRouter response"}), 500
-            except json.JSONDecodeError as e:
-                return jsonify({"error": f"Invalid JSON in OpenRouter response: {str(e)}"}), 500
+        # Use mock response in test mode
+        if TEST_MODE:
+            response_text = json.dumps({
+                "archetypes": ["Strategist", "Creator", "Sage"],
+                "traits": {
+                    "white": 0.75,
+                    "blue": 0.85,
+                    "black": 0.60,
+                    "red": 0.55,
+                    "green": 0.70
+                },
+                "entropy": 1.45
+            })
         else:
-            return jsonify({"error": "No content in OpenRouter response"}), 500
+            # Call OpenRouter API
+            headers = {
+                'Authorization': f'Bearer {OPENROUTER_API_KEY}',
+                'Content-Type': 'application/json',
+                'HTTP-Referer': 'http://localhost:5000',
+                'X-Title': 'SoulTrace Backend'
+            }
+            
+            payload = {
+                'model': 'openai/gpt-4o-mini',
+                'messages': [
+                    {
+                        'role': 'user',
+                        'content': prompt
+                    }
+                ],
+                'temperature': 0.7,
+                'max_tokens': 1024
+            }
+            
+            response = requests.post(OPENROUTER_API_URL, json=payload, headers=headers)
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            # Extract the text content from OpenRouter's response
+            if 'choices' in result and len(result['choices']) > 0:
+                response_text = result['choices'][0]['message']['content']
+            else:
+                return jsonify({"error": "No content in OpenRouter response"}), 500
+        
+        # Parse the JSON response
+        try:
+            # Try to extract JSON from the response
+            json_start = response_text.find('{')
+            json_end = response_text.rfind('}') + 1
+            
+            if json_start != -1 and json_end > json_start:
+                json_str = response_text[json_start:json_end]
+                analysis = json.loads(json_str)
+                return jsonify(analysis), 200
+            else:
+                return jsonify({"error": "Could not parse JSON from response"}), 500
+        except json.JSONDecodeError as e:
+            return jsonify({"error": f"Invalid JSON in response: {str(e)}"}), 500
             
     except requests.exceptions.RequestException as e:
         return jsonify({"error": f"OpenRouter API error: {str(e)}"}), 500
